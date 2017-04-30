@@ -69,6 +69,8 @@ func NewRiver(c *Config) (*River, error) {
 	r.es = elastic.NewClient(r.c.ESAddr)
 
 	r.st = &stat{r: r}
+
+	// 准备攻击数据
 	go r.st.Run(r.c.StatAddr)
 
 	return r, nil

@@ -47,11 +47,13 @@ func (h *eventHandler) OnRotate(e *replication.RotateEvent) error {
 }
 
 func (h *eventHandler) OnDDL(nextPos mysql.Position, _ *replication.QueryEvent) error {
+	// DDL之后SAVE POS
 	h.r.syncCh <- posSaver{nextPos, true}
 	return h.r.ctx.Err()
 }
 
 func (h *eventHandler) OnXID(nextPos mysql.Position) error {
+
 	h.r.syncCh <- posSaver{nextPos, false}
 	return h.r.ctx.Err()
 }
@@ -62,8 +64,10 @@ func (h *eventHandler) OnRow(e *canal.RowsEvent) error {
 		return nil
 	}
 
+	// 重点关注Row Event
 	var reqs []*elastic.BulkRequest
 	var err error
+	// 三种Action下如何处理呢?
 	switch e.Action {
 	case canal.InsertAction:
 		reqs, err = h.r.makeInsertRequest(rule, e.Rows)
@@ -117,6 +121,7 @@ func (r *River) syncLoop() {
 		case v := <-r.syncCh:
 			switch v := v.(type) {
 			case posSaver:
+				// 保存position
 				now := time.Now()
 				if v.force || now.Sub(lastSavedTime) > 3*time.Second {
 					lastSavedTime = now
@@ -125,6 +130,7 @@ func (r *River) syncLoop() {
 					pos = v.pos
 				}
 			case []*elastic.BulkRequest:
+				// 更新ES
 				reqs = append(reqs, v...)
 				needFlush = len(reqs) >= bulkSize
 			}
@@ -158,8 +164,11 @@ func (r *River) syncLoop() {
 func (r *River) makeRequest(rule *Rule, action string, rows [][]interface{}) ([]*elastic.BulkRequest, error) {
 	reqs := make([]*elastic.BulkRequest, 0, len(rows))
 
+	// rows如何和ElasticSearch关联呢?
 	for _, values := range rows {
+		// docId
 		id, err := r.getDocID(rule, values)
+
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -177,6 +186,7 @@ func (r *River) makeRequest(rule *Rule, action string, rows [][]interface{}) ([]
 			req.Action = elastic.ActionDelete
 			r.st.DeleteNum.Add(1)
 		} else {
+			// 数据信息
 			r.makeInsertReqData(req, rule, values)
 			r.st.InsertNum.Add(1)
 		}
@@ -316,6 +326,8 @@ func (r *River) makeInsertReqData(req *elastic.BulkRequest, rule *Rule, values [
 	req.Data = make(map[string]interface{}, len(values))
 	req.Action = elastic.ActionIndex
 
+	// 数据信息
+	// MYSQL --> Elastic Search Meta
 	for i, c := range rule.TableInfo.Columns {
 		if !rule.CheckFilter(c.Name) {
 			continue
@@ -388,8 +400,8 @@ func (r *River) makeUpdateReqData(req *elastic.BulkRequest, rule *Rule,
 // Else get the ID's column in one row and format them into a string
 func (r *River) getDocID(rule *Rule, row []interface{}) (string, error) {
 	var (
-  		ids []interface{}
-  		err error 
+		ids []interface{}
+		err error
 	)
 	if rule.ID == nil {
 		ids, err = canal.GetPKValues(rule.TableInfo, row)
@@ -431,6 +443,9 @@ func (r *River) getParentID(rule *Rule, row []interface{}, columnName string) (s
 	return fmt.Sprint(row[index]), nil
 }
 
+//
+// 批量更新ES
+//
 func (r *River) doBulk(reqs []*elastic.BulkRequest) error {
 	if len(reqs) == 0 {
 		return nil
